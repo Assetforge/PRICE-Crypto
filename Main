@@ -1,1 +1,188 @@
-test
+import numpy as np
+import yfinance as yf
+from datetime import datetime, timedelta
+
+
+class Asset:
+    def __init__(self, name, symbol, quantity, price, volatility, datetime):
+        self.name = name
+        self.symbol = symbol
+        self.quantity = quantity
+        self.price = price
+        self.volatility = volatility
+        self.datetime = datetime
+      
+
+class Portfolio:
+    def __init__(self, name, cash_init, assets=None, history = []):
+        self.name = name
+        self.cash = Asset('Cash', 'USD', cash_init, 1, 0, '01-01-2023')
+        self.assets = assets or []
+        self.history = history
+        self.asset_price_init = {} # Exemple : {
+                                   #                'BTC': {'name': 'Bitcoin', 'price': 27000},
+                                   #                'ETH': {'name': 'Ethereum', 'price': 2000},
+                                   #                'LTC': {'name': 'Litecoin', 'price': 150},
+                                   #                'XRP': {'name': 'Ripple', 'price': 0.5}
+                                   #            }
+
+    def add_asset(self, asset, order_time):
+        cout = asset.quantity*asset.price
+        c = self.cash.quantity
+        if c > cout :
+            self.history.append(['achat', asset, order_time])
+            self.assets.append(asset)
+            self.cash.quantity = c-cout
+
+        if self.assets == [] :
+            self.asset_price_init = {asset.symbol : {'name': asset.name, 'price': asset.price}}
+        else :
+          self.asset_price_init[asset.symbol] = {'name': asset.name, 'price': asset.price}
+        
+
+    def remove_asset(self, asset, order_time):
+        self.assets.remove(asset)
+        self.history.append(['vente', asset, order_time])
+        del self.asset_price_init[asset.symbol]
+
+
+    def total_value(self):
+        return sum(asset.quantity * asset.price for asset in self.assets)
+
+
+    def tp_sl(self, asset, order_time): # Fonction take profit et stop loss
+        ##Take profit sans conditions de support/résistance pour l'instant (version naif)
+        current_price = asset.price
+        price_init = self.asset_price_init[asset.symbol]['price']
+        
+        if current_price > 1.15*price_init :
+           self.remove_asset(asset, order_time)
+
+        elif current_price > 1.03*price_init :
+          asset1 = Asset(asset.name, asset.symbol, asset.quantity/2, asset.price, asset.volatility, asset.datetime) # On divie la quantité par deux
+          self.remove_asset(asset, order_time)
+          self.add_asset(asset1, order_time)
+  
+        ##Stop loss
+        elif current_price < 0.98*price_init :
+          asset1 = Asset( asset.name, asset.symbol, asset.quantity/2, asset.price, asset.volatility, asset.datetime)
+          self.remove_asset(asset, order_time)
+          self.add_asset(asset1, order_time)
+
+        elif current_price < 0.90*price_init :
+          self.remove_asset(asset, order_time)
+      
+
+    def update(self):
+      
+        # Met à jour chaque asset du portfeuille au prix du marché 
+        for asset in self.assets:
+
+            if asset.name != "Cash" : # On actualise pas le prix du dollars
+              # Récupérer le prix de cloture de la dernière heure avec yahoo finance
+              ticker = asset.symbol
+              interval = "1h"
+
+              # Calcul des dates d'aujourd'huis et d'avant avant avant hier (technique pour contourner yahoo finance restriction)
+              today = datetime.today().strftime('%Y-%m-%d')
+              yyyesterday = (datetime.today() - timedelta(days=3)).strftime('%Y-%m-%d')
+
+              # Historique des prix avec yahoo finance
+              data = yf.download(ticker, start=yyyesterday, end=today, interval=interval)
+
+              # Extraction du dernier prix de cloture en hourly
+              last_closed_price = data["Close"][-1]
+
+              # Mise à jour du prix de l'actif 
+              asset.price = last_closed_price
+      
+    def risk(self, cov_matrix):
+        values = [asset.quantity * asset.price for asset in self.assets]
+        values_array = np.array(values)
+        return np.sqrt(np.dot(values_array.T, np.dot(cov_matrix, values_array)))
+    
+    def print_performance_1(self, time):
+        print(f"Portfolio at time {time}:")
+        print("Asset\tSymbol\tVolatility\tQuantity\tPrice\tValue")
+        for asset in self.assets:
+            print(f"{asset.name}\t{asset.symbol}\t{asset.volatility}\t{asset.quantity}\t\t{asset.price}\t{asset.quantity * asset.price}")
+        print(f"Total value: {self.total_value()}\n")
+        
+    def print_performance_2(self, time_init, time_end, cov_matrix):
+        # Bilan à time_init
+        print(f"Portfolio at time {time_init}:")
+        print("Asset\tSymbol\tVolatility\tQuantity\tPrice\tValue")
+        for asset in self.assets:
+            print(f"{asset.name}\t{asset.symbol}\t{asset.volatility}\t{asset.quantity}\t\t{asset.price}\t{asset.quantity * asset.price}")
+        print(f"Total value at initial time: {self.total_value()}\n")
+        
+        
+        # Historique des opérations menées de time_init +1 inclu à time_end inclu
+        
+        #Trouver l'indice qui commence sur time_init
+        init=0
+        while init<len(self.history) and self.history[init][2]<time_init :
+            init+=1
+        if init==len(self.history):
+            print("Pas d'opération effectuée depuis time_init")
+            
+        #Trouver l'indice qui finit le time_end
+        end=0
+        while end<len(self.history) and self.history[end][2]<time_end :
+            end+=1
+        if end==len(self.history):
+            print("time_end dépasse le dernier temps répertorié dans l'historique.")
+        
+        #Boucler pour l'affichage
+        if init<end:
+            for e in self.history[init:end+1]:
+                print("Nature opération :" + e[0] + " de l'actif " + e[1].name + " d'une volatilité " + str(e[1].volatility) + " à la date " + str(e[2]))
+                print("Ratio volatilité de l'actif sous-jacent sur le risque du portefeuille :" + str(e[1].volatility/self.risk(cov_matrix)))
+        elif init==end:
+            print("Pas de nouvelle opération")
+        elif init > end:     
+            print("Veuillez rentrer un time_init inférieur à time_end")
+            
+        
+        # Bilan à time_end
+        print(f"Portfolio at time {time_end}:")
+        print("Asset\tSymbol\tVolatility\tQuantity\tPrice\tValue")
+        for asset in self.assets:
+            print(f"{asset.name}\t{asset.symbol}\t{asset.volatility}\t{asset.quantity}\t\t{asset.price}\t{asset.quantity * asset.price}")
+        print(f"Total value at final time: {self.total_value()}\n")
+        
+
+
+# Exemple d'usage pour print_performance_1
+Pf = Portfolio("My Portfolio", 10000)
+date = datetime.today().strftime('%Y-%m-%d')
+
+A1 = Asset("Bitcoin", "BTC-USD", 100, 10, 4, date)
+A2 = Asset("Ethereum", "ETH-USD", 50, 20, 5, date)
+
+Pf.add_asset(A1, 1)
+Pf.add_asset(A2, 1)
+
+print(Pf.asset_price_init)
+Pf.print_performance_1(1)
+
+Pf.update()
+Pf.print_performance_1(1)
+
+Pf.tp_sl(A1,1)
+Pf.print_performance_1(1)
+
+"""p.add_asset(Asset("Asset 3", "A3", 200, 5, 6, dt), 2)
+p.remove_asset(p.assets[0], 2)
+p.print_performance_1(2)"""
+
+# Exemple d'usage pour print_performance_2 
+
+#À modifier
+"""p = Portfolio("My Portfolio")
+p.add_asset(Asset("Asset 1", "A1", 100, 10, 4, dt), 1)
+p.add_asset(Asset("Asset 2", "A2", 50, 20, 5, dt), 1)
+p.add_asset(Asset("Asset 3", "A3", 60, 300, 4, dt), 2)
+cov_matrix = np.array([[1, 2, 6], [4, 5, 1], [2, 6, 1]])
+p.print_performance_2(1,2, cov_matrix)"""
+
